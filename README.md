@@ -43,7 +43,7 @@ ShowMeThePlates is a client-side BepInEx plugin for SPT 4.1. It adds a small, cl
 
 ![ShowMeThePlates panel](ShowMeThePlates_InventoryVest.png)
 
-![ShowMeThePlates panel](ShowMeThePlates_Loott.png)
+![ShowMeThePlates panel](ShowMeThePlates_Loot.png)
 
 ### 4. Everything is configurable
 Press **F12** and look for **ShowMeThePlates**. You can move the panel, resize it, change the text size, turn the glow and the damage flash on or off, pick when it appears, and decide what the inventory overlay shows. Every option has a description.
