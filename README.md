@@ -2,7 +2,7 @@
 
 ## Preview
 
-![ShowMeThePlates panel](assets/ShowMeThePlates_panel.webp)
+![ShowMeThePlates panel](ShowMeThePlates_panel.webp)
 
 
 **See the condition of your armor plates and helmet inserts at a glance, in raid and in your inventory, without opening a single menu.**
