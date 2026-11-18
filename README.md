@@ -39,6 +39,12 @@ ShowMeThePlates is a client-side BepInEx plugin for SPT 4.1. It adds a small, cl
 - Hover an item and the **tooltip lists every plate and insert** with its class and durability.
 - Handy when you are comparing carriers at the flea market or deciding which plates to put in which vest.
 
+![ShowMeThePlates panel](ShowMeThePlates_InventoryHelmet.png)
+
+![ShowMeThePlates panel](ShowMeThePlates_InventoryVest.png)
+
+![ShowMeThePlates panel](ShowMeThePlates_Loott.png)
+
 ### 4. Everything is configurable
 Press **F12** and look for **ShowMeThePlates**. You can move the panel, resize it, change the text size, turn the glow and the damage flash on or off, pick when it appears, and decide what the inventory overlay shows. Every option has a description.
 
