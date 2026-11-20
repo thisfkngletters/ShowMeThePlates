@@ -20,7 +20,7 @@ namespace ShowMeThePlates
         const string InvName = "SMTP_InvText";
         static Item hovered;
 
-        class Part { public string Short, Long; public float Cur, Max; public int Cls; }
+        class Part { public string Short, Long; public float Cur, Max; public int Cls, Rank; public bool Empty; }
 
         void InvInit()
         {
@@ -62,17 +62,20 @@ namespace ShowMeThePlates
             return 1;
         }
 
-        // Placas / insertos de un objeto (vacio si no es blindaje con piezas)
-        static List<Part> PartsOf(Item item)
+        // Placas / insertos de un objeto (vacio si no es blindaje con piezas).
+        // soft = true: si NO tiene ranuras de placa (ni piezas de casco), lista sus insertos blandos (chalecos solo con insertos; icono y tooltip).
+        // Chalecos con ranuras de placa: solo placas (si estan vacias, nada), para no saturar el icono (flea market).
+        static List<Part> PartsOf(Item item, bool soft = false, bool noPlates = false)
         {
-            var list = new List<Part>();
+            var list = new List<Part>(); List<Part> ins = null; bool plateSlot = false;
             var ci = item as CompoundItem;
             if (ci == null) return list;
             foreach (var sl in ci.Slots)
             {
+                string low = (sl.ID ?? "").ToLowerInvariant();
+                if (low.Contains("plate") && !low.Contains("soft")) plateSlot = true;   // tiene ranuras de placa (llenas o vacias)
                 var ch = sl.ContainedItem;
                 if (ch == null) continue;
-                string low = (sl.ID ?? "").ToLowerInvariant();
                 var rep = ch.GetItemComponent<RepairableComponent>();
                 if (rep == null) continue;
                 if (low.Contains("plate") && !low.Contains("soft"))
@@ -84,7 +87,16 @@ namespace ShowMeThePlates
                 int z = low.StartsWith("helmet") ? ZoneFor(low) : -1;
                 if (z >= 0) { list.Add(new Part { Short = ZoneShort[z], Long = ZoneNames[z], Cur = rep.Durability, Max = rep.MaxDurability, Cls = ClassOf(ch) }); continue; }
                 if (IsVisor(sl, ch)) { list.Add(new Part { Short = "G", Long = "Gear", Cur = rep.Durability, Max = rep.MaxDurability, Cls = ClassOf(ch) }); continue; }
+                if (soft && !low.StartsWith("mod_") && !low.StartsWith("helmet") && ch.GetItemComponent<ArmorComponent>() != null)
+                {
+                    int rk; string full; string lb = InsertLabel(low, sl.ID ?? "", out rk, out full);
+                    if (ins == null) ins = new List<Part>();
+                    ins.Add(new Part { Short = rk < SoftShort.Length ? SoftShort[rk] : lb, Long = lb, Cur = rep.Durability, Max = rep.MaxDurability, Cls = ClassOf(ch), Rank = rk });
+                }
             }
+            // noPlates = true (solo el icono): ranuras de placa todas vacias -> una linea "No Plates"
+            if (noPlates && list.Count == 0 && plateSlot) { list.Add(new Part { Short = "No Plates", Long = "No Plates", Empty = true }); return list; }
+            if (list.Count == 0 && !plateSlot && ins != null) { ins.Sort((a, b) => a.Rank.CompareTo(b.Rank)); return ins; }
             return list;
         }
         // Insignia grafica de clase (sprite TMP del juego "armor_classes_N"); si no existe, numero romano en gris
@@ -109,6 +121,7 @@ namespace ShowMeThePlates
         static readonly string[] Roman = { "", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X" };
         static string Rom(int c) { return c > 0 && c < Roman.Length ? Roman[c] : ""; }
         static readonly string[] ZoneShort = { "T", "N", "E", "J", "Ea" };
+        static readonly string[] SoftShort = { "Cs", "Bs", "LS", "RS", "Ns", "Gs", "GRs", "LSh", "RSh" };   // por rango de InsertLabel
 
         static string Hex(float frac)
         {
@@ -123,7 +136,7 @@ namespace ShowMeThePlates
                 var iv = __instance as ItemView;
                 if (iv == null) return;
                 var tr = iv.transform.Find(InvName);
-                var parts = inst.cInvText.Value ? PartsOf(iv.Item) : null;
+                var parts = inst.cInvText.Value ? PartsOf(iv.Item, true, true) : null;
                 if (parts == null || parts.Count == 0) { if (tr != null) tr.gameObject.SetActive(false); return; }
                 TextMeshProUGUI t;
                 if (tr == null)
@@ -197,6 +210,7 @@ namespace ShowMeThePlates
                     var q = parts[i];
                     float f = q.Max > 0f ? q.Cur / q.Max : 0f;
                     if (i > 0) sb.Append('\n');
+                    if (q.Empty) { sb.Append("<color=#9A9A9A>").Append(q.Short).Append("</color>"); continue; }
                     sb.Append(inst.cInvClass.Value && inst.cInvClassIcon.Value && q.Cls > 0 ? ClassTag(t, q.Cls) : "").Append(q.Short).Append(' ').Append("<color=#").Append(Hex(f)).Append('>').Append(Mathf.Floor(q.Cur + 0.0001f).ToString("0")).Append("</color>");
                     if (full) sb.Append('/').Append(Mathf.Floor(q.Max + 0.0001f).ToString("0"));
                 }
@@ -239,7 +253,7 @@ namespace ShowMeThePlates
             var inst = Inst; if (inst == null || hovered == null || !inst.cInvTip.Value || text == null) return;
             try
             {
-                var parts = PartsOf(hovered);
+                var parts = PartsOf(hovered, true);
                 if (parts.Count == 0 || text.Contains(parts[0].Long + ":")) return;
                 var sb = new StringBuilder(text);
                 bool spr = cachedSprite != null;

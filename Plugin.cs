@@ -15,17 +15,17 @@ namespace ShowMeThePlates
 {
     // HUD de durabilidad de las placas del chaleco (solo placas, sin insertos ni casco).
     // Se muestra manteniendo pulsada la tecla (R por defecto) o siempre, segun config (F12).
-    [BepInPlugin("com.showmetheplates", "ShowMeThePlates", "1.0.0")]
+    [BepInPlugin("com.showmetheplates", "ShowMeThePlates", "1.1.0")]
     public partial class Plugin : BaseUnityPlugin
     {
         public enum ShowMode { AutoHide, AlwaysOn }
         public enum WarnStyle { Notification, Panel, Both }
 
-        class Row { public string Id, Label, Txt, Full; public float Cur, Max; public int Kind, Zone; public Item It; public IconData Icon; }  // Kind: 0 placa, 1 casco, 2 inserto
+        class Row { public string Id, Label, Txt, Full, Src, TxtM; public Item Owner; public float Cur, Max; public int Kind, Zone; public Item It; public IconData Icon; }  // Kind: 0 placa, 1 casco, 2 inserto de casco, 3 cabecera chaleco, 4 inserto blando del chaleco
 
         ConfigEntry<ShowMode> cMode; ConfigEntry<WarnStyle> cWarnStyle; ConfigEntry<string> cNotifIcon, cSound, cClip, cFile; ConfigEntry<float> cVol; ConfigEntry<KeyCode> cTest;
         ConfigEntry<float> cHideDelay, cHold, cPosX, cPosY, cScale, cWarnSecs, cAlpha, cFade, cIconPct;
-        ConfigEntry<bool> cColor;
+        ConfigEntry<bool> cColor, cMirror, cVestIns;
         ConfigEntry<int> cTextPxI;
         ConfigEntry<string> cFont;
         float fade; Font font; string fontLoaded = null;
@@ -74,7 +74,9 @@ namespace ShowMeThePlates
             cRealIcons = Config.Bind(P, "Real item icons on plates / inserts", true, D("Uses the game's own icon of each plate, insert and helmet visor (filled by durability) instead of the drawn shapes. Icons are generated once per item type and cached. Off: drawn shapes.", 100));
             cGearPct = Config.Bind(P, "Vest / helmet icon size (%)", 400f, D("Size of the vest and helmet silhouette.", new AcceptableValueRange<float>(80f, 600f), 103));
             cDetail = Config.Bind(P, "Icon detail", 0.7f, D("Blends the real item icon into the silhouette for more texture. 0 = flat silhouette.", new AcceptableValueRange<float>(0f, 1f), 102));
-            cPosX = Config.Bind(P, "Position X (%)", 2f, D("0 = left edge, 100 = right edge.", new AcceptableValueRange<float>(0f, 100f), 100));
+            cMirror = Config.Bind(P, "Mirror layout (right side)", false, D("Flips the panel for the right side of the screen: text right-aligned, icons to the right of the text, plate / insert rows indented to the left. Position X is then measured from the RIGHT edge of the screen (2 = 2 % from the right edge), so the panel jumps to the right side without touching anything else. Applies to the vest and helmet panels.", 101));
+            cVestIns = Config.Bind(P, "Always show vest soft inserts", false, D("Vest soft armor inserts (chest, back, sides, neck, groin, shoulders) are always listed when the vest has no plates. Turn this on to list them under the plates too.", 99));
+            cPosX = Config.Bind(P, "Position X (%)", 2f, D("0 = left edge, 100 = right edge. With 'Mirror layout' on, it is measured from the right edge instead (0 = right edge).", new AcceptableValueRange<float>(0f, 100f), 100));
             cPosY = Config.Bind(P, "Position Y (%)", 29f, D("0 = top edge, 100 = bottom edge.", new AcceptableValueRange<float>(0f, 100f), 90));
             cScale = Config.Bind(P, "Overall scale", 1f, D("Scales the whole panel.", new AcceptableValueRange<float>(0.5f, 3f), 80));
             cIconPct = Config.Bind(P, "Icon size (%)", 100f, D("Size of the plate and helmet icons.", new AcceptableValueRange<float>(40f, 300f), 70));
@@ -92,7 +94,7 @@ namespace ShowMeThePlates
             // ---- 3. Helmet ----
             cHelmet = Config.Bind(H, "Show helmet", true, D("Show the overall helmet durability.", 100));
             cHelmetIns = Config.Bind(H, "Show helmet inserts", true, D("Show Top, Nape, Eyes, Jaw and Ears (only the ones the helmet actually has).", 90));
-            cHX = Config.Bind(H, "Position X (%)", 1.9f, D("0 = left edge, 100 = right edge.", new AcceptableValueRange<float>(0f, 100f), 80));
+            cHX = Config.Bind(H, "Position X (%)", 1.9f, D("0 = left edge, 100 = right edge. With 'Mirror layout' (2. Panel) on, it is measured from the right edge instead (0 = right edge).", new AcceptableValueRange<float>(0f, 100f), 80));
             cHY = Config.Bind(H, "Position Y (%)", 50f, D("0 = top edge, 100 = bottom edge.", new AcceptableValueRange<float>(0f, 100f), 70));
             // ---- 4. Alerts ----
             cWarn = Config.Bind(W, "Alert when a component breaks", true, D("Alert when a plate or helmet insert reaches 0 durability.", 100));
@@ -106,7 +108,7 @@ namespace ShowMeThePlates
             cClip = Config.Bind(W, "Audio clip name", "", D("If set, plays the loaded AudioClip whose name contains this text instead of the UI sound.", 30, true));
             Inst = this;
             try { InvInit(); } catch (Exception e) { Logger.LogWarning("Inventario: " + e.Message); }
-            Logger.LogInfo("ShowMeThePlates 1.0.0 loaded");
+            Logger.LogInfo("ShowMeThePlates 1.1.0 loaded");
         }
 
         void Update()
@@ -152,30 +154,53 @@ namespace ShowMeThePlates
                 var found = new List<Row>(); Item newVest = null, newHelm = null; float vc = 0f, vm = 0f;
                 var eq = p.Equipment;
                 if (eq == null) return;
-                foreach (var es in new[] { EquipmentSlot.TacticalVest, EquipmentSlot.ArmorVest })
+                Item armorVest = null, rigVest = null; bool rigPlateSlots = false; var ins = new List<Row>(); int nPlates = 0;
+                foreach (var es in new[] { EquipmentSlot.ArmorVest, EquipmentSlot.TacticalVest })
                 {
                     var slot = eq.GetSlot(es);
                     var vest = slot != null ? slot.ContainedItem : null;
                     if (vest == null) continue;
-                    if (newVest == null) newVest = vest;
+                    if (es == EquipmentSlot.ArmorVest) armorVest = vest; else rigVest = vest;
                     var comp = vest as CompoundItem;
                     if (comp == null) { if (cDebug.Value) Dbg("Chaleco no es CompoundItem: " + vest.GetType().Name); continue; }
                     foreach (var sl in comp.Slots)
                     {
                         string sid = sl.ID ?? "";
                         string low = sid.ToLowerInvariant();
+                        if (es == EquipmentSlot.TacticalVest && low.Contains("plate") && !low.Contains("soft")) rigPlateSlots = true;   // rig con ranuras de placa (llenas o vacias)
                         if (cDebug.Value && dbgOnce) Dbg("Ranura " + sid + " -> " + (sl.ContainedItem != null ? sl.ContainedItem.TemplateId.ToString() : "(vacia)"));
                         var it0 = sl.ContainedItem;
                         if (it0 != null) { var r0 = it0.GetItemComponent<RepairableComponent>(); if (r0 != null) { vc += r0.Durability; vm += r0.MaxDurability; } }
-                        if (!low.Contains("plate") || low.Contains("soft")) continue;
+                        if (!low.Contains("plate") || low.Contains("soft"))
+                        {
+                            // inserto blando (o collar, ingle, hombros): cualquier pieza con blindaje y durabilidad que no sea placa
+                            if (it0 != null && it0.GetItemComponent<ArmorComponent>() != null)
+                            {
+                                var irep = it0.GetItemComponent<RepairableComponent>();
+                                int rk; string full; string lb = InsertLabel(low, sid, out rk, out full);
+                                if (irep != null) { var ir0 = NewRow(it0.Id, lb, full, 4, rk, irep, it0); ir0.Owner = vest; ins.Add(ir0); }
+                            }
+                            continue;
+                        }
                         var it = sl.ContainedItem;
                         if (it == null) continue;
                         var rep = it.GetItemComponent<RepairableComponent>();
                         if (rep == null) { if (cDebug.Value && dbgOnce) Dbg("Sin Repairable: " + sid); continue; }
-                        found.Add(NewRow(it.Id, LabelFor(low), null, 0, 0, rep, it));
+                        var pr0 = NewRow(it.Id, LabelFor(low), null, 0, 0, rep, it); pr0.Owner = vest; found.Add(pr0);
                     }
                 }
-                if (newVest != null && vm > 0f && found.Exists(q => q.Kind == 0)) found.Add(HeaderRow(newVest, 3, vc, vm));
+                // cabecera/icono: 1) rig con ranuras de placa (aunque esten vacias), 2) body armor, 3) el rig que haya
+                newVest = (rigVest != null && rigPlateSlots) ? rigVest : (armorVest ?? rigVest);
+                nPlates = found.Count;
+                // piezas del otro chaleco (el que no va en la cabecera): se marcan con su nombre corto
+                foreach (var lst in new[] { found, ins })
+                    foreach (var r in lst)
+                    {
+                        if (r.Owner != null && newVest != null && r.Owner != newVest) { r.Src = GearName(r.Owner, "Vest"); r.TxtM = "(" + r.Src + ") " + r.Txt; r.Txt = r.Txt + " (" + r.Src + ")"; }
+                        else r.TxtM = r.Txt;
+                    }
+                if (nPlates == 0 || cVestIns.Value) found.AddRange(ins);   // sin placas: se listan los insertos; con placas, solo si se pide
+                if (newVest != null && vm > 0f && found.Exists(q => q.Kind == 0 || q.Kind == 4)) found.Add(HeaderRow(newVest, 3, vc, vm));
                 if (cHelmet.Value)
                 {
                     var hs = eq.GetSlot(EquipmentSlot.Headwear);
@@ -212,7 +237,7 @@ namespace ShowMeThePlates
                 helmItem = newHelm;
                 vestItem = newVest;
                 dbgOnce = false;
-                found.Sort((a, b) => { int ka = KindOrder(a.Kind), kb = KindOrder(b.Kind); return ka != kb ? ka.CompareTo(kb) : a.Zone != b.Zone ? a.Zone.CompareTo(b.Zone) : PlateRank(a.Label) != PlateRank(b.Label) ? PlateRank(a.Label).CompareTo(PlateRank(b.Label)) : string.CompareOrdinal(a.Label, b.Label); });
+                found.Sort(CompareRows);
                 // Aviso al llegar a 0
                 foreach (var r in found)
                 {
@@ -224,10 +249,11 @@ namespace ShowMeThePlates
                     }
                     if (last.TryGetValue(r.Id, out prev) && prev > 0.01f && r.Cur <= 0.01f && cWarn.Value && r.Kind != 3)
                     {
-                        warnText = (r.Kind == 0 ? r.Label : r.Full) + " is broken!";
+                        string own = r.Src != null ? " (" + r.Src + ")" : "";
+                        warnText = (r.Kind == 0 ? r.Label : r.Full) + own + " is broken!";
                         if (cWarnStyle.Value != WarnStyle.Notification) warnUntil = Time.unscaledTime + cWarnSecs.Value;
                         PlayWarnSound();
-                        if (cWarnStyle.Value != WarnStyle.Panel) Notify((r.Kind == 0 ? Nombre(r.Label) : r.Full) + " is broken!");
+                        if (cWarnStyle.Value != WarnStyle.Panel) Notify((r.Kind == 0 ? Nombre(r.Label) : r.Full) + own + " is broken!");
                         showUntil = Time.unscaledTime + cWarnSecs.Value;
                         Dbg("Placa a 0: " + r.Label);
                     }
@@ -296,7 +322,35 @@ namespace ShowMeThePlates
             return 4;
         }
 
-        static int KindOrder(int k) { return k == 3 ? 0 : k == 0 ? 1 : k == 1 ? 2 : 3; }
+        // Orden: tipo, zona, placa (F, R, LS, RS), etiqueta; a igualdad, primero la del chaleco de la cabecera
+        static int CompareRows(Row a, Row b)
+        {
+            int ka = KindOrder(a.Kind), kb = KindOrder(b.Kind);
+            if (ka != kb) return ka.CompareTo(kb);
+            if (a.Zone != b.Zone) return a.Zone.CompareTo(b.Zone);
+            int pa = PlateRank(a.Label), pb = PlateRank(b.Label);
+            if (pa != pb) return pa.CompareTo(pb);
+            int c = string.CompareOrdinal(a.Label, b.Label);
+            if (c != 0) return c;
+            int sa = a.Src == null ? 0 : 1, sb = b.Src == null ? 0 : 1;
+            if (sa != sb) return sa.CompareTo(sb);
+            return string.CompareOrdinal(a.Id, b.Id);
+        }
+
+        static int KindOrder(int k) { return k == 3 ? 0 : k == 0 ? 1 : k == 4 ? 2 : k == 1 ? 3 : 4; }
+
+        // Nombre corto, orden y nombre largo de un inserto blando del chaleco segun su ranura
+        static string InsertLabel(string low, string sid, out int rank, out string full)
+        {
+            if (low.Contains("collar") || low.Contains("neck")) { rank = 4; full = "Neck soft insert"; return "Neck Soft"; }
+            if (low.Contains("groin")) { if (low.Contains("back")) { rank = 6; full = "Groin rear soft insert"; return "Groin R. Soft"; } rank = 5; full = "Groin soft insert"; return "Groin Soft"; }
+            if (low.Contains("shoulder")) { if (low.EndsWith("r") || low.Contains("right")) { rank = 8; full = "Right shoulder insert"; return "R. Shoulder"; } rank = 7; full = "Left shoulder insert"; return "L. Shoulder"; }
+            if (low.Contains("front")) { rank = 0; full = "Chest soft insert"; return "Chest Soft"; }
+            if (low.Contains("back")) { rank = 1; full = "Back soft insert"; return "Back Soft"; }
+            if (low.Contains("left")) { rank = 2; full = "Left side soft insert"; return "LS. Soft"; }
+            if (low.Contains("right")) { rank = 3; full = "Right side soft insert"; return "RS. Soft"; }
+            rank = 9; full = sid + " insert"; return sid;
+        }
 
         Row HeaderRow(Item it, int kind, float cur, float max)
         {
@@ -578,8 +632,9 @@ namespace ShowMeThePlates
             float gearH = 22f * s * cGearPct.Value / 100f;
             float gap = 8f * s, indent = 18f * s, lw = Mathf.Max(1f, 1.5f * s);
             style.fontSize = Mathf.RoundToInt(cTextPxI.Value * s);
-            float xP = Screen.width * cPosX.Value / 100f, yP = Screen.height * cPosY.Value / 100f;
-            float xH = Screen.width * cHX.Value / 100f, yH = Screen.height * cHY.Value / 100f;
+            bool mir = cMirror.Value;   // modo espejo: X se mide desde el borde derecho y todo se refleja respecto a esa X (borde derecho del panel)
+            float xP = Screen.width * (mir ? 100f - cPosX.Value : cPosX.Value) / 100f, yP = Screen.height * cPosY.Value / 100f;
+            float xH = Screen.width * (mir ? 100f - cHX.Value : cHX.Value) / 100f, yH = Screen.height * cHY.Value / 100f;
             float master = cAlpha.Value * Mathf.SmoothStep(0f, 1f, fade);
             bool pulse = Time.unscaledTime < warnUntil && ((int)(Time.unscaledTime * 3f) % 2 == 0);
             float minRow = cTextPxI.Value * s * 1.4f;
@@ -588,7 +643,7 @@ namespace ShowMeThePlates
             var old = GUI.color;
             foreach (var r in rows)
             {
-                bool grpP = r.Kind == 0 || r.Kind == 3;
+                bool grpP = r.Kind == 0 || r.Kind == 3 || r.Kind == 4;
                 bool header = r.Kind == 3 || r.Kind == 1;
                 float frac = r.Max > 0f ? Mathf.Clamp01(r.Cur / r.Max) : 0f;
                 Color c = Color.white;
@@ -609,11 +664,11 @@ namespace ShowMeThePlates
                     float rowH = Mathf.Max(vh, minRow) + 4f * s;
                     if (useIcon)
                     {
-                        var ir = new Rect(x, y + (rowH - vh) / 2f, vw, vh);
+                        var ir = Mir(new Rect(x, y + (rowH - vh) / 2f, vw, vh), x, mir);
                         if (d != null) DrawGearIcon(ir, d, frac, c, a, glow, fl);
                         else DrawAltyn(ir, 1, 0, frac, c, a, glow, fl);
                     }
-                    DrawText(new Rect(x + (useIcon ? vw + gap : 0f), y, 500f * s, rowH), r.Txt, a, s);
+                    DrawText(Mir(new Rect(x + (useIcon ? vw + gap : 0f), y, 500f * s, rowH), x, mir), r.Txt, a, s, mir);
                     float cy = y + (useIcon ? (rowH + vh) / 2f : rowH * 0.85f);
                     if (grpP) { yP += rowH; cyP = cy; } else { yH += rowH; cyH = cy; }
                     continue;
@@ -627,29 +682,32 @@ namespace ShowMeThePlates
                 {
                     float lx = x + indent * 0.3f;
                     GUI.color = new Color(1f, 1f, 1f, 0.3f * a);
-                    GUI.DrawTexture(new Rect(lx, cy0, lw, mid - cy0 + lw), Texture2D.whiteTexture);
-                    GUI.DrawTexture(new Rect(lx, mid, indent * 0.6f, lw), Texture2D.whiteTexture);
+                    GUI.DrawTexture(Mir(new Rect(lx, cy0, lw, mid - cy0 + lw), x, mir), Texture2D.whiteTexture);
+                    GUI.DrawTexture(Mir(new Rect(lx, mid, indent * 0.6f, lw), x, mir), Texture2D.whiteTexture);
                     if (grpP) cyP = mid; else cyH = mid;
                 }
                 float iw = 0f;
                 if (pIcon)
                 {
                     IconData pd = cRealIcons.Value ? r.Icon : null;
-                    if (pd != null) { iw = Mathf.Min(iconH * pd.W / pd.H, iconH * 1.8f); DrawGearIcon(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), pd, frac, c, a, glow, fl); }
-                    else if (r.Kind == 0) { iw = iconH * 0.75f; DrawPlateIcon(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), frac, c, a, glow, fl); }
-                    else { iw = iconH; DrawAltyn(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), 2, Mathf.Clamp(r.Zone, 0, 4), frac, c, a, glow, fl); }
+                    if (pd != null) { iw = Mathf.Min(iconH * pd.W / pd.H, iconH * 1.8f); DrawGearIcon(Mir(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), x, mir), pd, frac, c, a, glow, fl); }
+                    else if (r.Kind == 0 || r.Kind == 4) { iw = iconH * 0.75f; DrawPlateIcon(Mir(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), x, mir), frac, c, a, glow, fl); }
+                    else { iw = iconH; DrawAltyn(Mir(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), x, mir), 2, Mathf.Clamp(r.Zone, 0, 4), frac, c, a, glow, fl); }
                 }
-                DrawText(new Rect(cx + iw + (pIcon ? gap : 0f), y, 400f * s, rowC), r.Txt, a, s);
+                DrawText(Mir(new Rect(cx + iw + (pIcon ? gap : 0f), y, 400f * s, rowC), x, mir), mir ? (r.TxtM ?? r.Txt) : r.Txt, a, s, mir);
                 if (grpP) yP += rowC; else yH += rowC;
             }
             if (Time.unscaledTime < warnUntil)
             {
                 float a = master * (pulse ? 0.4f : 1f);
-                var wr = new Rect(xP, yP + 4f, 500f * s, minRow + 4f * s);
-                DrawText(wr, "! " + warnText, a, s);
+                var wr = Mir(new Rect(xP, yP + 4f, 500f * s, minRow + 4f * s), xP, mir);
+                DrawText(wr, mir ? warnText + " !" : "! " + warnText, a, s, mir);
             }
             GUI.color = old;
         }
+
+        // Refleja un rectangulo horizontalmente respecto a la vertical x = ax (modo espejo)
+        static Rect Mir(Rect r, float ax, bool on) { return on ? new Rect(2f * ax - r.xMax, r.y, r.width, r.height) : r; }
 
         void DrawPlateIcon(Rect ir, float frac, Color c, float a, float glow, float fl)
         {
@@ -718,7 +776,7 @@ namespace ShowMeThePlates
         void UpdateIcons()
         {
             if (cPlateIcons.Value && cRealIcons.Value)
-                for (int i = 0; i < rows.Count; i++) { var r = rows[i]; if (r.Icon == null && r.It != null && (r.Kind == 0 || r.Kind == 2)) r.Icon = GetIcon(r.It, PlateKey(r.It)); }
+                for (int i = 0; i < rows.Count; i++) { var r = rows[i]; if (r.Icon == null && r.It != null && (r.Kind == 0 || r.Kind == 2 || r.Kind == 4)) r.Icon = GetIcon(r.It, PlateKey(r.It)); }
             if (!cGearIcon.Value) return;
             vestIcon = GetIcon(vestItem);
             helmIcon = GetIcon(helmItem);
@@ -1127,9 +1185,9 @@ namespace ShowMeThePlates
             if (rt.sizeDelta != sz) rt.sizeDelta = sz;
         }
 
-        void DrawText(Rect r, string txt, float a, float s)
+        void DrawText(Rect r, string txt, float a, float s, bool right = false)
         {
-            if (tmpFont == null) { DrawGlow(r, txt, a, s); return; }
+            if (tmpFont == null) { DrawGlow(r, txt, a, s, right); return; }
             try
             {
                 EnsureCanvas();
@@ -1139,6 +1197,8 @@ namespace ShowMeThePlates
                 var pos = new Vector2(r.x, -r.y); var sz = new Vector2(r.width, r.height);
                 float g = cGlow.Value;
                 float dil = Mathf.Clamp(0.08f + 0.05f * cGlowSize.Value, 0.05f, 0.6f);
+                var al = right ? TextAlignmentOptions.MidlineRight : TextAlignmentOptions.MidlineLeft;
+                if (sl.main.alignment != al) { sl.main.alignment = al; sl.halo.alignment = al; }
                 Fill(sl.main, sl, txt, size, pos, sz);
                 Fill(sl.halo, sl, txt, size, pos, sz);
                 sl.txt = txt;
@@ -1157,12 +1217,13 @@ namespace ShowMeThePlates
                     }
                 }
             }
-            catch (Exception e) { if (!tmpErr) { tmpErr = true; Logger.LogWarning("TMP: " + e.Message); } tmpFont = null; tmpTries = 99; DrawGlow(r, txt, a, s); }
+            catch (Exception e) { if (!tmpErr) { tmpErr = true; Logger.LogWarning("TMP: " + e.Message); } tmpFont = null; tmpTries = 99; DrawGlow(r, txt, a, s, right); }
         }
         bool tmpErr;
 
-        void DrawGlow(Rect r, string t, float a, float s)
+        void DrawGlow(Rect r, string t, float a, float s, bool right = false)
         {
+            style.alignment = right ? TextAnchor.MiddleRight : TextAnchor.MiddleLeft;
             float g = cGlow.Value;
             if (g > 0.01f)
             {
@@ -1179,6 +1240,7 @@ namespace ShowMeThePlates
             GUI.Label(new Rect(r.x + 1f, r.y + 1f, r.width, r.height), t, style);
             style.normal.textColor = new Color(1f, 1f, 1f, a);
             GUI.Label(r, t, style);
+            style.alignment = TextAnchor.MiddleLeft;
         }
 
         float nextFontTry;
