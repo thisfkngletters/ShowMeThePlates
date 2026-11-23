@@ -15,24 +15,32 @@ namespace ShowMeThePlates
 {
     // HUD de durabilidad de las placas del chaleco (solo placas, sin insertos ni casco).
     // Se muestra manteniendo pulsada la tecla (R por defecto) o siempre, segun config (F12).
-    [BepInPlugin("com.showmetheplates", "ShowMeThePlates", "1.1.0")]
+    [BepInPlugin("com.showmetheplates", "ShowMeThePlates", "1.2.0")]
     public partial class Plugin : BaseUnityPlugin
     {
         public enum ShowMode { AutoHide, AlwaysOn }
         public enum WarnStyle { Notification, Panel, Both }
 
-        class Row { public string Id, Label, Txt, Full, Src, TxtM; public Item Owner; public float Cur, Max; public int Kind, Zone; public Item It; public IconData Icon; }  // Kind: 0 placa, 1 casco, 2 inserto de casco, 3 cabecera chaleco, 4 inserto blando del chaleco
+        class Row { public string Id, Label, Txt, Full, Src, TxtM; public Item Owner; public float Cur, Max; public int Kind, Zone; public Item It; public IconData Icon; }  // Kind: 0 placa, 1 casco, 2 inserto de casco, 3 cabecera chaleco, 4 inserto blando del chaleco, 6 cabecera mascara, 7 inserto mascara, 8 cabecera pierneras, 9 inserto pierneras
+
+        // Paneles: 0 chalecos/rigs, 1 cascos, 2 mascaras (facecover), 3 pierneras (Manimal's Leg Armor)
+        const int GV = 0, GH = 1, GF = 2, GL = 3, NG = 4;
+        static int Grp(int kind) { return kind == 1 || kind == 2 ? GH : kind == 6 || kind == 7 ? GF : kind == 8 || kind == 9 ? GL : GV; }
+        static bool IsHeader(int kind) { return kind == 1 || kind == 3 || kind == 6 || kind == 8; }
+        readonly ConfigEntry<bool>[] cOn = new ConfigEntry<bool>[NG], cMr = new ConfigEntry<bool>[NG];
+        readonly ConfigEntry<float>[] cX = new ConfigEntry<float>[NG], cY = new ConfigEntry<float>[NG], cSz = new ConfigEntry<float>[NG];
+        ConfigEntry<bool> cVPlates, cVInsNoSlots, cVInsAll, cFaceIns, cLegIns;
 
         ConfigEntry<ShowMode> cMode; ConfigEntry<WarnStyle> cWarnStyle; ConfigEntry<string> cNotifIcon, cSound, cClip, cFile; ConfigEntry<float> cVol; ConfigEntry<KeyCode> cTest;
-        ConfigEntry<float> cHideDelay, cHold, cPosX, cPosY, cScale, cWarnSecs, cAlpha, cFade, cIconPct;
-        ConfigEntry<bool> cColor, cMirror, cVestIns;
+        ConfigEntry<float> cHideDelay, cHold, cWarnSecs, cAlpha, cFade, cIconPct;
+        ConfigEntry<bool> cColor;
         ConfigEntry<int> cTextPxI;
         ConfigEntry<string> cFont;
         float fade; Font font; string fontLoaded = null;
         ConfigEntry<KeyCode> cKey;
-        ConfigEntry<bool> cGearIcon, cPlateIcons, cRealIcons, cHideUI; bool uiOpenPrev; ConfigEntry<float> cGearPct, cDetail; ConfigEntry<bool> cWarn, cOnlyInRaid, cDebug, cHelmet, cHelmetIns, cOnDamage, cFlash; ConfigEntry<float> cFlashSecs, cFlashStr;
+        ConfigEntry<bool> cGearIcon, cPlateIcons, cRealIcons, cHideUI; bool uiOpenPrev; ConfigEntry<float> cGearPct, cDetail; ConfigEntry<bool> cDumpIcons; ConfigEntry<bool> cWarn, cOnlyInRaid, cDebug, cHelmetIns, cOnDamage, cFlash; ConfigEntry<float> cFlashSecs, cFlashStr;
         readonly Dictionary<string, float> flashUntil = new Dictionary<string, float>();
-        const float FlashR = 0.95f, FlashG = 0.28f, FlashB = 0.25f; ConfigEntry<float> cThresh; bool belowThresh; ConfigEntry<float> cHX, cHY;
+        const float FlashR = 0.95f, FlashG = 0.28f, FlashB = 0.25f; ConfigEntry<float> cThresh; bool belowThresh;
         bool dbgOnce = true;
 
         readonly List<Row> rows = new List<Row>();
@@ -57,48 +65,50 @@ namespace ShowMeThePlates
 
         void Awake()
         {
-            const string G = "1. General", P = "2. Panel", H = "3. Helmet", W = "4. Alerts";
+            const string G = "1. General", P = "2. Style", V = "3. Vests / Rigs", H = "4. Helmets", F = "5. Facecovers", L = "6. Leg Armor", W = "7. Alerts";
             // ---- 1. General ----
-            cMode = Config.Bind(G, "Display mode", ShowMode.AutoHide, D("AutoHide: the panel hides after a few seconds. AlwaysOn: always visible.", 100));
-            cKey = Config.Bind(G, "Show key", KeyCode.R, D("Hold this key to show the panel (note: R is also reload).", 90));
-            cHold = Config.Bind(G, "Key hold time (s)", 0.5f, D("How long the key must be held to show the panel.", new AcceptableValueRange<float>(0.2f, 2f), 80));
-            cHideDelay = Config.Bind(G, "Visible time (s)", 2f, D("Seconds the panel stays visible in AutoHide mode.", new AcceptableValueRange<float>(1f, 30f), 70));
-            cOnDamage = Config.Bind(G, "Show on durability loss", true, D("The panel appears every time a plate or helmet insert loses durability.", 60));
-            cThresh = Config.Bind(G, "Low durability threshold (%)", 0f, D("The panel stays visible while any component is at or below this percentage. 0 = disabled.", new AcceptableValueRange<float>(0f, 100f), 50));
-            cOnlyInRaid = Config.Bind(G, "Raid only", true, D("Hide the panel outside of raids.", 40));
+            cMode = Config.Bind(G, "Display mode", ShowMode.AutoHide, D("AutoHide: the panels hide after a few seconds. AlwaysOn: always visible.", 100));
+            cKey = Config.Bind(G, "Show key", KeyCode.R, D("Hold this key to show the panels (note: R is also reload).", 90));
+            cHold = Config.Bind(G, "Key hold time (s)", 0.5f, D("How long the key must be held to show the panels.", new AcceptableValueRange<float>(0.2f, 2f), 80));
+            cHideDelay = Config.Bind(G, "Visible time (s)", 2f, D("Seconds the panels stay visible in AutoHide mode.", new AcceptableValueRange<float>(1f, 30f), 70));
+            cOnDamage = Config.Bind(G, "Show on durability loss", true, D("The panels appear every time a plate or insert loses durability.", 60));
+            cThresh = Config.Bind(G, "Low durability threshold (%)", 0f, D("The panels stay visible while any component is at or below this percentage. 0 = disabled.", new AcceptableValueRange<float>(0f, 100f), 50));
+            cOnlyInRaid = Config.Bind(G, "Raid only", true, D("Hide the panels outside of raids.", 40));
+            cHideUI = Config.Bind(G, "Hide in menus / inventory", true, D("Fades the panels out whenever the mouse cursor is free (main menu, inventory, pause menu, hideout screens). Turn off to position the panels while F12 is open.", 39));
             cDebug = Config.Bind(G, "Debug overlay", false, D("Shows a small debug line on screen and logs the vest slots.", 10, true));
-            // ---- 2. Panel ----
-            cHideUI = Config.Bind(G, "Hide in menus / inventory", true, D("Fades the panel out whenever the mouse cursor is free (main menu, inventory, pause menu, hideout screens). Turn off to position the panel while F12 is open.", 39));
-            cGearIcon = Config.Bind(P, "Show vest / helmet icon", true, D("Shows the silhouette of your equipped vest and helmet (from their inventory icon), filled by their total durability.", 105));
-            cPlateIcons = Config.Bind(P, "Show plate / insert icons", true, D("Shows an icon next to each plate and helmet insert. Off: text only.", 104));
+            cDumpIcons = Config.Bind(G, "Save icon PNGs (debug)", false, D("Saves every generated icon as icon_<id>_original.png / _mask.png next to the DLL. Only for debugging, leave off.", 9, true));
+            // ---- 2. Style (comun a todos los paneles) ----
+            cGearIcon = Config.Bind(P, "Show item icon", true, D("Shows the silhouette of your equipped vest, helmet, mask and leg armor (from their inventory icon), filled by their total durability.", 105));
+            cPlateIcons = Config.Bind(P, "Show plate / insert icons", true, D("Shows an icon next to each plate and insert. Off: text only.", 104));
             cRealIcons = Config.Bind(P, "Real item icons on plates / inserts", true, D("Uses the game's own icon of each plate, insert and helmet visor (filled by durability) instead of the drawn shapes. Icons are generated once per item type and cached. Off: drawn shapes.", 100));
-            cGearPct = Config.Bind(P, "Vest / helmet icon size (%)", 400f, D("Size of the vest and helmet silhouette.", new AcceptableValueRange<float>(80f, 600f), 103));
+            cGearPct = Config.Bind(P, "Item icon size (%)", 400f, D("Size of the vest / helmet / mask / leg armor silhouette.", new AcceptableValueRange<float>(80f, 600f), 103));
             cDetail = Config.Bind(P, "Icon detail", 0.7f, D("Blends the real item icon into the silhouette for more texture. 0 = flat silhouette.", new AcceptableValueRange<float>(0f, 1f), 102));
-            cMirror = Config.Bind(P, "Mirror layout (right side)", false, D("Flips the panel for the right side of the screen: text right-aligned, icons to the right of the text, plate / insert rows indented to the left. Position X is then measured from the RIGHT edge of the screen (2 = 2 % from the right edge), so the panel jumps to the right side without touching anything else. Applies to the vest and helmet panels.", 101));
-            cVestIns = Config.Bind(P, "Always show vest soft inserts", false, D("Vest soft armor inserts (chest, back, sides, neck, groin, shoulders) are always listed when the vest has no plates. Turn this on to list them under the plates too.", 99));
-            cPosX = Config.Bind(P, "Position X (%)", 2f, D("0 = left edge, 100 = right edge. With 'Mirror layout' on, it is measured from the right edge instead (0 = right edge).", new AcceptableValueRange<float>(0f, 100f), 100));
-            cPosY = Config.Bind(P, "Position Y (%)", 29f, D("0 = top edge, 100 = bottom edge.", new AcceptableValueRange<float>(0f, 100f), 90));
-            cScale = Config.Bind(P, "Overall scale", 1f, D("Scales the whole panel.", new AcceptableValueRange<float>(0.5f, 3f), 80));
-            cIconPct = Config.Bind(P, "Icon size (%)", 100f, D("Size of the plate and helmet icons.", new AcceptableValueRange<float>(40f, 300f), 70));
-            cTextPxI = Config.Bind(P, "Text size (px)", 20, D("Size of the text.", new AcceptableValueRange<int>(8, 60), 60));
-            cAlpha = Config.Bind(P, "Opacity", 1f, D("Overall opacity of the panel.", new AcceptableValueRange<float>(0.2f, 1f), 50));
+            cIconPct = Config.Bind(P, "Plate / insert icon size (%)", 100f, D("Size of the plate and insert icons.", new AcceptableValueRange<float>(40f, 300f), 70));
+            cTextPxI = Config.Bind(P, "Text size (px)", 20, D("Size of the text (multiplied by each panel's Size).", new AcceptableValueRange<int>(8, 60), 60));
+            cAlpha = Config.Bind(P, "Opacity", 1f, D("Overall opacity of the panels.", new AcceptableValueRange<float>(0.2f, 1f), 50));
             cFade = Config.Bind(P, "Fade duration (s)", 0.6f, D("Fade in / fade out time. 0 = instant.", new AcceptableValueRange<float>(0f, 3f), 40));
             cColor = Config.Bind(P, "Color by wear", false, D("On: the fill color changes with the remaining durability. Off: always white, read the fill level only.", 30));
             cGlow = Config.Bind(P, "Glow strength", 0.5f, D("Soft glow around the text and icons. 0 = off.", new AcceptableValueRange<float>(0f, 3f), 20));
             cGlowSize = Config.Bind(P, "Glow radius (px)", 2f, D("Size of the glow around the text.", new AcceptableValueRange<float>(1f, 8f), 15));
-            cFlash = Config.Bind(P, "Damage flash", true, D("The plate or zone that just lost durability briefly turns soft red.", 12));
+            cFlash = Config.Bind(P, "Damage flash", true, D("The plate or insert that just lost durability briefly turns soft red.", 12));
             cFlashSecs = Config.Bind(P, "Damage flash duration (s)", 3f, D("How long the damage flash lasts.", new AcceptableValueRange<float>(0.5f, 10f), 11));
             cFlashStr = Config.Bind(P, "Damage flash intensity", 0.55f, D("0.1 = very subtle, 1 = strong.", new AcceptableValueRange<float>(0.1f, 1f), 10, true));
             cTmpFontName = Config.Bind(P, "In-game font name", "bender normal", D("Part of the name of the game's TextMeshPro font asset to use. Empty = use the fallback.", 5, true));
             cFont = Config.Bind(P, "Fallback font file", "", D("Only used if the game font is not found. Name or path of a .ttf/.otf file.", 4, true));
-            // ---- 3. Helmet ----
-            cHelmet = Config.Bind(H, "Show helmet", true, D("Show the overall helmet durability.", 100));
-            cHelmetIns = Config.Bind(H, "Show helmet inserts", true, D("Show Top, Nape, Eyes, Jaw and Ears (only the ones the helmet actually has).", 90));
-            cHX = Config.Bind(H, "Position X (%)", 1.9f, D("0 = left edge, 100 = right edge. With 'Mirror layout' (2. Panel) on, it is measured from the right edge instead (0 = right edge).", new AcceptableValueRange<float>(0f, 100f), 80));
-            cHY = Config.Bind(H, "Position Y (%)", 50f, D("0 = top edge, 100 = bottom edge.", new AcceptableValueRange<float>(0f, 100f), 70));
-            // ---- 4. Alerts ----
-            cWarn = Config.Bind(W, "Alert when a component breaks", true, D("Alert when a plate or helmet insert reaches 0 durability.", 100));
-            cWarnStyle = Config.Bind(W, "Alert type", WarnStyle.Notification, D("Notification: red Tarkov-style popup. Panel: blinking text under the plates. Both: popup and blinking text.", 90));
+            // ---- 3..6: un panel por categoria, cada uno con ON/OFF, posicion, tamano y espejo ----
+            BindPanel(GV, V, "vest / rig", 2f, 29f);
+            cVPlates = Config.Bind(V, "Show plates", true, D("Lists the ballistic plates (front, rear, sides) of your vest / rig.", 50));
+            cVInsNoSlots = Config.Bind(V, "Show inserts (vests WITHOUT plate slots)", true, D("Lists the soft armor inserts (chest, back, sides, neck, groin, shoulders...) only for vests / rigs that have NO plate slots (e.g. PACA, soft armored rigs).", 49));
+            cVInsAll = Config.Bind(V, "Show inserts (ALL vests)", false, D("Lists the soft armor inserts of every vest / rig, also the ones with plate slots (under the plates). Overrides the option above.", 48));
+            BindPanel(GH, H, "helmet", 1.9f, 50f);
+            cHelmetIns = Config.Bind(H, "Show helmet inserts", true, D("Show Top, Nape, Eyes, Jaw, Ears and Gear (visor / faceshield), only the ones the helmet actually has. Off: helmet total only.", 50));
+            BindPanel(GF, F, "facecover (ballistic masks)", 2f, 29f, true);
+            cFaceIns = Config.Bind(F, "Show mask inserts", true, D("If the mask has armored inserts, list each one. Off: mask total only. Masks without inserts (e.g. CQCM ballistic mask) always show their own durability.", 50));
+            BindPanel(GL, L, "leg armor (Manimal's Leg Armor mod)", 1.9f, 50f, true);
+            cLegIns = Config.Bind(L, "Show leg armor inserts", true, D("List each leg armor insert (L. Thigh, R. Thigh, L. Calf, R. Calf). Off: leg armor total only.", 50));
+            // ---- 7. Alerts ----
+            cWarn = Config.Bind(W, "Alert when a component breaks", true, D("Alert when a plate or insert (vest, helmet, mask or leg armor) reaches 0 durability.", 100));
+            cWarnStyle = Config.Bind(W, "Alert type", WarnStyle.Notification, D("Notification: red Tarkov-style popup. Panel: blinking text under the vest panel. Both: popup and blinking text.", 90));
             cWarnSecs = Config.Bind(W, "Panel alert duration (s)", 8f, D("How long the blinking text stays (Panel / Both).", new AcceptableValueRange<float>(1f, 20f), 80));
             cVol = Config.Bind(W, "Clip volume", 0.2f, D("Volume of the break sound.", new AcceptableValueRange<float>(0f, 1f), 70));
             cTest = Config.Bind(W, "Test key", KeyCode.None, D("Press it to preview the alert (sound and popup) without breaking a plate. None = disabled.", 60, true));
@@ -108,7 +118,16 @@ namespace ShowMeThePlates
             cClip = Config.Bind(W, "Audio clip name", "", D("If set, plays the loaded AudioClip whose name contains this text instead of the UI sound.", 30, true));
             Inst = this;
             try { InvInit(); } catch (Exception e) { Logger.LogWarning("Inventario: " + e.Message); }
-            Logger.LogInfo("ShowMeThePlates 1.1.0 loaded");
+            Logger.LogInfo("ShowMeThePlates 1.2.0 loaded");
+        }
+
+        void BindPanel(int g, string sec, string what, float x, float y, bool mirror = false)
+        {
+            cOn[g] = Config.Bind(sec, "Enabled", true, D("Show the " + what + " panel.", 100));
+            cX[g] = Config.Bind(sec, "Position X (%)", x, D("0 = left edge, 100 = right edge. With 'Mirror layout' on, it is measured from the RIGHT edge instead (0 = right edge).", new AcceptableValueRange<float>(0f, 100f), 90));
+            cY[g] = Config.Bind(sec, "Position Y (%)", y, D("0 = top edge, 100 = bottom edge.", new AcceptableValueRange<float>(0f, 100f), 80));
+            cSz[g] = Config.Bind(sec, "Size", 1f, D("Scale of this panel (icons and text).", new AcceptableValueRange<float>(0.5f, 3f), 70));
+            cMr[g] = Config.Bind(sec, "Mirror layout (right side)", mirror, D("Flips this panel for the right side of the screen: text right-aligned, icons to the right of the text, insert rows indented to the left. Position X is then measured from the RIGHT edge of the screen (2 = 2 % from the right edge).", 60));
         }
 
         void Update()
@@ -151,91 +170,18 @@ namespace ShowMeThePlates
         {
             try
             {
-                var found = new List<Row>(); Item newVest = null, newHelm = null; float vc = 0f, vm = 0f;
+                var found = new List<Row>();
                 var eq = p.Equipment;
                 if (eq == null) return;
-                Item armorVest = null, rigVest = null; bool rigPlateSlots = false; var ins = new List<Row>(); int nPlates = 0;
-                foreach (var es in new[] { EquipmentSlot.ArmorVest, EquipmentSlot.TacticalVest })
-                {
-                    var slot = eq.GetSlot(es);
-                    var vest = slot != null ? slot.ContainedItem : null;
-                    if (vest == null) continue;
-                    if (es == EquipmentSlot.ArmorVest) armorVest = vest; else rigVest = vest;
-                    var comp = vest as CompoundItem;
-                    if (comp == null) { if (cDebug.Value) Dbg("Chaleco no es CompoundItem: " + vest.GetType().Name); continue; }
-                    foreach (var sl in comp.Slots)
-                    {
-                        string sid = sl.ID ?? "";
-                        string low = sid.ToLowerInvariant();
-                        if (es == EquipmentSlot.TacticalVest && low.Contains("plate") && !low.Contains("soft")) rigPlateSlots = true;   // rig con ranuras de placa (llenas o vacias)
-                        if (cDebug.Value && dbgOnce) Dbg("Ranura " + sid + " -> " + (sl.ContainedItem != null ? sl.ContainedItem.TemplateId.ToString() : "(vacia)"));
-                        var it0 = sl.ContainedItem;
-                        if (it0 != null) { var r0 = it0.GetItemComponent<RepairableComponent>(); if (r0 != null) { vc += r0.Durability; vm += r0.MaxDurability; } }
-                        if (!low.Contains("plate") || low.Contains("soft"))
-                        {
-                            // inserto blando (o collar, ingle, hombros): cualquier pieza con blindaje y durabilidad que no sea placa
-                            if (it0 != null && it0.GetItemComponent<ArmorComponent>() != null)
-                            {
-                                var irep = it0.GetItemComponent<RepairableComponent>();
-                                int rk; string full; string lb = InsertLabel(low, sid, out rk, out full);
-                                if (irep != null) { var ir0 = NewRow(it0.Id, lb, full, 4, rk, irep, it0); ir0.Owner = vest; ins.Add(ir0); }
-                            }
-                            continue;
-                        }
-                        var it = sl.ContainedItem;
-                        if (it == null) continue;
-                        var rep = it.GetItemComponent<RepairableComponent>();
-                        if (rep == null) { if (cDebug.Value && dbgOnce) Dbg("Sin Repairable: " + sid); continue; }
-                        var pr0 = NewRow(it.Id, LabelFor(low), null, 0, 0, rep, it); pr0.Owner = vest; found.Add(pr0);
-                    }
-                }
-                // cabecera/icono: 1) rig con ranuras de placa (aunque esten vacias), 2) body armor, 3) el rig que haya
-                newVest = (rigVest != null && rigPlateSlots) ? rigVest : (armorVest ?? rigVest);
-                nPlates = found.Count;
-                // piezas del otro chaleco (el que no va en la cabecera): se marcan con su nombre corto
-                foreach (var lst in new[] { found, ins })
-                    foreach (var r in lst)
-                    {
-                        if (r.Owner != null && newVest != null && r.Owner != newVest) { r.Src = GearName(r.Owner, "Vest"); r.TxtM = "(" + r.Src + ") " + r.Txt; r.Txt = r.Txt + " (" + r.Src + ")"; }
-                        else r.TxtM = r.Txt;
-                    }
-                if (nPlates == 0 || cVestIns.Value) found.AddRange(ins);   // sin placas: se listan los insertos; con placas, solo si se pide
-                if (newVest != null && vm > 0f && found.Exists(q => q.Kind == 0 || q.Kind == 4)) found.Add(HeaderRow(newVest, 3, vc, vm));
-                if (cHelmet.Value)
-                {
-                    var hs = eq.GetSlot(EquipmentSlot.Headwear);
-                    var hi = hs != null ? hs.ContainedItem : null;
-                    if (hi != null)
-                    {
-                        newHelm = hi;
-                        var hrep = hi.GetItemComponent<RepairableComponent>();
-                        float hcur = hrep != null ? hrep.Durability : 0f, hmax = hrep != null ? hrep.MaxDurability : 0f;
-                        var hc = hi as CompoundItem;
-                        bool logH = loggedHelmet.Add(hi.Id);
-                        if (hc != null)
-                            foreach (var sl in hc.Slots)
-                            {
-                                string low = (sl.ID ?? "").ToLowerInvariant();
-                                if (logH) Dbg("Casco ranura " + sl.ID + " -> " + (sl.ContainedItem != null ? sl.ContainedItem.TemplateId.ToString() : "(vacia)"));
-                                int z = ZoneFor(low);
-                                if (z < 0 && sl.ContainedItem != null && IsVisor(sl, sl.ContainedItem))
-                                {
-                                    var vrep = sl.ContainedItem.GetItemComponent<RepairableComponent>();
-                                    if (vrep != null) { hcur += vrep.Durability; hmax += vrep.MaxDurability; }
-                                    if (vrep != null && cHelmetIns.Value) found.Add(NewRow(sl.ContainedItem.Id, "Gear", "Helmet gear", 2, 2, vrep, sl.ContainedItem));
-                                    continue;
-                                }
-                                if (z < 0 || sl.ContainedItem == null) continue;
-                                var rep = sl.ContainedItem.GetItemComponent<RepairableComponent>();
-                                if (rep == null) continue;
-                                hcur += rep.Durability; hmax += rep.MaxDurability;
-                                if (cHelmetIns.Value) found.Add(NewRow(sl.ContainedItem.Id, ZoneNames[z], "Helmet " + ZoneNames[z] + " insert", 2, z, rep, sl.ContainedItem));
-                            }
-                        if (hmax > 0f) found.Add(HeaderRow(hi, 1, hcur, hmax));
-                    }
-                }
+                Item newVest = cOn[GV].Value ? PollVests(eq, found) : null;
+                Item newHelm = cOn[GH].Value ? PollHelmet(eq, found) : null;
+                Item newFace = null, newLegs = null;
+                if (cOn[GF].Value) { var fs = eq.GetSlot(EquipmentSlot.FaceCover); newFace = PollPiece(fs != null ? fs.ContainedItem : null, found, 6, 7, cFaceIns.Value); }
+                if (cOn[GL].Value) newLegs = PollPiece(FindLegArmor(eq), found, 8, 9, cLegIns.Value);
                 helmItem = newHelm;
                 vestItem = newVest;
+                faceItem = newFace;
+                legItem = newLegs;
                 dbgOnce = false;
                 found.Sort(CompareRows);
                 // Aviso al llegar a 0
@@ -247,15 +193,16 @@ namespace ShowMeThePlates
                         flashUntil[r.Id] = Time.unscaledTime + cFlashSecs.Value;
                         if (cOnDamage.Value) showUntil = Time.unscaledTime + cHideDelay.Value;
                     }
-                    if (last.TryGetValue(r.Id, out prev) && prev > 0.01f && r.Cur <= 0.01f && cWarn.Value && r.Kind != 3)
+                    if (last.TryGetValue(r.Id, out prev) && prev > 0.01f && r.Cur <= 0.01f && cWarn.Value && (!IsHeader(r.Kind) || r.Kind == 6))
                     {
                         string own = r.Src != null ? " (" + r.Src + ")" : "";
-                        warnText = (r.Kind == 0 ? r.Label : r.Full) + own + " is broken!";
+                        string what = r.Kind == 0 ? r.Label : r.Full;
+                        warnText = what + own + " is broken!";
                         if (cWarnStyle.Value != WarnStyle.Notification) warnUntil = Time.unscaledTime + cWarnSecs.Value;
                         PlayWarnSound();
                         if (cWarnStyle.Value != WarnStyle.Panel) Notify((r.Kind == 0 ? Nombre(r.Label) : r.Full) + own + " is broken!");
                         showUntil = Time.unscaledTime + cWarnSecs.Value;
-                        Dbg("Placa a 0: " + r.Label);
+                        Dbg("Pieza a 0: " + what);
                     }
                     last[r.Id] = r.Cur;
                 }
@@ -266,6 +213,164 @@ namespace ShowMeThePlates
                 rows.Clear(); rows.AddRange(found);
             }
             catch (Exception e) { Logger.LogWarning("Poll: " + e.Message); }
+        }
+
+        // ---- Chalecos / rigs (ArmorVest + TacticalVest) ----
+        // Placas si "Show plates"; insertos blandos si "Show inserts (ALL vests)" o, con "Show inserts (vests WITHOUT plate slots)",
+        // solo en los chalecos que no tienen ninguna ranura de placa.
+        Item PollVests(InventoryEquipment eq, List<Row> found)
+        {
+            float vc = 0f, vm = 0f;
+            Item armorVest = null, rigVest = null, newVest = null; bool rigPlateSlots = false, headSlots = false;
+            var mine = new List<Row>();
+            foreach (var es in new[] { EquipmentSlot.ArmorVest, EquipmentSlot.TacticalVest })
+            {
+                var slot = eq.GetSlot(es);
+                var vest = slot != null ? slot.ContainedItem : null;
+                if (vest == null) continue;
+                if (es == EquipmentSlot.ArmorVest) armorVest = vest; else rigVest = vest;
+                var comp = vest as CompoundItem;
+                if (comp == null) { if (cDebug.Value) Dbg("Chaleco no es CompoundItem: " + vest.GetType().Name); continue; }
+                bool plateSlots = false;
+                foreach (var sl in comp.Slots) { string l0 = (sl.ID ?? "").ToLowerInvariant(); if (l0.Contains("plate") && !l0.Contains("soft")) { plateSlots = true; break; } }
+                if (es == EquipmentSlot.TacticalVest) rigPlateSlots = plateSlots;   // rig con ranuras de placa (llenas o vacias)
+                bool showIns = cVInsAll.Value || (cVInsNoSlots.Value && !plateSlots);
+                foreach (var sl in comp.Slots)
+                {
+                    string sid = sl.ID ?? "";
+                    string low = sid.ToLowerInvariant();
+                    if (cDebug.Value && dbgOnce) Dbg("Ranura " + sid + " -> " + (sl.ContainedItem != null ? sl.ContainedItem.TemplateId.ToString() : "(vacia)"));
+                    var it = sl.ContainedItem;
+                    if (it == null) continue;
+                    var rep = it.GetItemComponent<RepairableComponent>();
+                    if (rep != null) { vc += rep.Durability; vm += rep.MaxDurability; }
+                    if (rep == null) { if (cDebug.Value && dbgOnce) Dbg("Sin Repairable: " + sid); continue; }
+                    if (!low.Contains("plate") || low.Contains("soft"))
+                    {
+                        // inserto blando (o collar, ingle, hombros, antebrazos): cualquier pieza con blindaje y durabilidad que no sea placa
+                        if (showIns && it.GetItemComponent<ArmorComponent>() != null)
+                        {
+                            int rk; string full; string lb = InsertLabel(low, sid, out rk, out full);
+                            var ir0 = NewRow(it.Id, lb, full, 4, rk, rep, it); ir0.Owner = vest; mine.Add(ir0);
+                        }
+                        continue;
+                    }
+                    if (!cVPlates.Value) continue;
+                    var pr0 = NewRow(it.Id, LabelFor(low), null, 0, 0, rep, it); pr0.Owner = vest; mine.Add(pr0);
+                }
+            }
+            // cabecera/icono: 1) rig con ranuras de placa (aunque esten vacias), 2) body armor, 3) el rig que haya
+            newVest = (rigVest != null && rigPlateSlots) ? rigVest : (armorVest ?? rigVest);
+            headSlots = newVest != null && newVest == rigVest ? rigPlateSlots : false;
+            if (newVest != null && newVest == armorVest)
+            {
+                var ac = armorVest as CompoundItem;
+                if (ac != null) foreach (var sl in ac.Slots) { string l0 = (sl.ID ?? "").ToLowerInvariant(); if (l0.Contains("plate") && !l0.Contains("soft")) { headSlots = true; break; } }
+            }
+            // piezas del otro chaleco (el que no va en la cabecera): se marcan con su nombre corto
+            foreach (var r in mine)
+            {
+                if (r.Owner != null && newVest != null && r.Owner != newVest) { r.Src = GearName(r.Owner, "Vest"); r.TxtM = "(" + r.Src + ") " + r.Txt; r.Txt = r.Txt + " (" + r.Src + ")"; }
+                else r.TxtM = r.Txt;
+            }
+            found.AddRange(mine);
+            // cabecera: si hay algo que listar, o si el chaleco tiene ranuras de placa y se piden placas (aunque esten vacias)
+            if (newVest != null && vm > 0f && (mine.Count > 0 || (cVPlates.Value && headSlots))) found.Add(HeaderRow(newVest, 3, vc, vm));
+            return newVest;
+        }
+
+        // ---- Casco (Headwear) ----
+        Item PollHelmet(InventoryEquipment eq, List<Row> found)
+        {
+            var hs = eq.GetSlot(EquipmentSlot.Headwear);
+            var hi = hs != null ? hs.ContainedItem : null;
+            if (hi == null) return null;
+            var hrep = hi.GetItemComponent<RepairableComponent>();
+            float hcur = hrep != null ? hrep.Durability : 0f, hmax = hrep != null ? hrep.MaxDurability : 0f;
+            var hc = hi as CompoundItem;
+            bool logH = loggedHelmet.Add(hi.Id);
+            if (hc != null)
+                foreach (var sl in hc.Slots)
+                {
+                    string low = (sl.ID ?? "").ToLowerInvariant();
+                    if (logH) Dbg("Casco ranura " + sl.ID + " -> " + (sl.ContainedItem != null ? sl.ContainedItem.TemplateId.ToString() : "(vacia)"));
+                    int z = ZoneFor(low);
+                    if (z < 0 && sl.ContainedItem != null && IsVisor(sl, sl.ContainedItem))
+                    {
+                        var vrep = sl.ContainedItem.GetItemComponent<RepairableComponent>();
+                        if (vrep != null) { hcur += vrep.Durability; hmax += vrep.MaxDurability; }
+                        if (vrep != null && cHelmetIns.Value) found.Add(NewRow(sl.ContainedItem.Id, "Gear", "Helmet gear", 2, 2, vrep, sl.ContainedItem));
+                        continue;
+                    }
+                    if (z < 0 || sl.ContainedItem == null) continue;
+                    var rep = sl.ContainedItem.GetItemComponent<RepairableComponent>();
+                    if (rep == null) continue;
+                    hcur += rep.Durability; hmax += rep.MaxDurability;
+                    if (cHelmetIns.Value) found.Add(NewRow(sl.ContainedItem.Id, ZoneNames[z], "Helmet " + ZoneNames[z] + " insert", 2, z, rep, sl.ContainedItem));
+                }
+            if (hmax <= 0f) return null;
+            found.Add(HeaderRow(hi, 1, hcur, hmax));
+            return hi;
+        }
+
+        // ---- Pieza blindada generica: mascara (FaceCover) o pierneras ----
+        // Total = durabilidad propia (si es blindaje, p. ej. CQCM) + la de cada inserto blindado de sus ranuras.
+        // Sin durabilidad (pasamontanas, mascaras decorativas): no se muestra.
+        Item PollPiece(Item it, List<Row> found, int headKind, int insKind, bool showIns)
+        {
+            if (it == null) return null;
+            float cur = 0f, max = 0f;
+            var rep = it.GetItemComponent<RepairableComponent>();
+            if (rep != null && it.GetItemComponent<ArmorComponent>() != null) { cur += rep.Durability; max += rep.MaxDurability; }
+            var ci = it as CompoundItem;
+            bool log = loggedHelmet.Add(it.Id);
+            if (ci != null)
+                foreach (var sl in ci.Slots)
+                {
+                    var ch = sl.ContainedItem;
+                    if (log) Dbg((headKind == 6 ? "Mascara" : "Pierneras") + " ranura " + sl.ID + " -> " + (ch != null ? ch.TemplateId.ToString() : "(vacia)"));
+                    if (ch == null || ch.GetItemComponent<ArmorComponent>() == null) continue;
+                    var r = ch.GetItemComponent<RepairableComponent>();
+                    if (r == null) continue;
+                    cur += r.Durability; max += r.MaxDurability;
+                    if (!showIns) continue;
+                    string sid = sl.ID ?? "", low = sid.ToLowerInvariant();
+                    int rk; string full, lb;
+                    int z = low.StartsWith("helmet") ? ZoneFor(low) : -1;
+                    if (z >= 0) { lb = ZoneNames[z]; full = (headKind == 6 ? "Mask " : "") + ZoneNames[z] + " insert"; rk = z; }
+                    else if (IsVisor(sl, ch)) { lb = "Gear"; full = "Mask gear"; rk = 2; }
+                    else lb = InsertLabel(low, sid, out rk, out full);
+                    var row = NewRow(ch.Id, lb, full, insKind, rk, r, ch); row.Owner = it; found.Add(row);
+                }
+            if (max <= 0f) return null;
+            var hr = HeaderRow(it, headKind, cur, max);
+            if (headKind == 6) hr.Full = hr.Label;   // aviso "CQCM is broken!" si la mascara no tiene insertos
+            found.Add(hr);
+            return it;
+        }
+
+        // ---- Manimal's Leg Armor: las pierneras van en la ranura "mod_legarmor" de un objeto oculto (Holder) dentro de los bolsillos ----
+        const string LegHolderTpl = "5e9c4f1d8a2b4c3d7f0e1a8c";
+        static Item FindLegArmor(InventoryEquipment eq)
+        {
+            try
+            {
+                var ps = eq.GetSlot(EquipmentSlot.Pockets);
+                var pockets = ps != null ? ps.ContainedItem as CompoundItem : null;
+                if (pockets == null) return null;
+                foreach (var child in pockets.GetAllItems())
+                {
+                    if (child.TemplateId.ToString() == LegHolderTpl)
+                    {
+                        var holder = child as CompoundItem;
+                        if (holder == null) continue;
+                        foreach (var sl in holder.Slots) if (sl.ID == "mod_legarmor" && sl.ContainedItem != null) return sl.ContainedItem;
+                    }
+                    else if (child.GetType().Name == "LegArmorItem" && SlotId(child) == "mod_legarmor") return child;   // por si cambia el id del Holder
+                }
+            }
+            catch { }
+            return null;
         }
 
         // Id de la ranura donde esta el item (por reflexion, los tipos de direccion estan ofuscados)
@@ -337,11 +442,16 @@ namespace ShowMeThePlates
             return string.CompareOrdinal(a.Id, b.Id);
         }
 
-        static int KindOrder(int k) { return k == 3 ? 0 : k == 0 ? 1 : k == 4 ? 2 : k == 1 ? 3 : 4; }
+        static int KindOrder(int k) { return IsHeader(k) ? 0 : k == 0 ? 1 : k == 4 ? 2 : 3; }   // en cada panel: cabecera, placas, insertos
 
         // Nombre corto, orden y nombre largo de un inserto blando del chaleco segun su ranura
         static string InsertLabel(string low, string sid, out int rank, out string full)
         {
+            bool lft = low.Contains("left") || low.EndsWith("_l"), rgt = low.Contains("right") || low.EndsWith("_r");
+            // pierneras (Manimal's Leg Armor) y antebrazos (p. ej. FORT Killa)
+            if (low.Contains("thigh")) { if (rgt) { rank = 10; full = "Right thigh insert"; return "R. Thigh"; } rank = 9; full = "Left thigh insert"; return "L. Thigh"; }
+            if (low.Contains("calf")) { if (rgt) { rank = 12; full = "Right calf insert"; return "R. Calf"; } rank = 11; full = "Left calf insert"; return "L. Calf"; }
+            if (low.Contains("forearm")) { if (rgt) { rank = 14; full = "Right forearm insert"; return "R. Forearm"; } rank = 13; full = "Left forearm insert"; return "L. Forearm"; }
             if (low.Contains("collar") || low.Contains("neck")) { rank = 4; full = "Neck soft insert"; return "Neck Soft"; }
             if (low.Contains("groin")) { if (low.Contains("back")) { rank = 6; full = "Groin rear soft insert"; return "Groin R. Soft"; } rank = 5; full = "Groin soft insert"; return "Groin Soft"; }
             if (low.Contains("shoulder")) { if (low.EndsWith("r") || low.Contains("right")) { rank = 8; full = "Right shoulder insert"; return "R. Shoulder"; } rank = 7; full = "Left shoulder insert"; return "L. Shoulder"; }
@@ -349,12 +459,12 @@ namespace ShowMeThePlates
             if (low.Contains("back")) { rank = 1; full = "Back soft insert"; return "Back Soft"; }
             if (low.Contains("left")) { rank = 2; full = "Left side soft insert"; return "LS. Soft"; }
             if (low.Contains("right")) { rank = 3; full = "Right side soft insert"; return "RS. Soft"; }
-            rank = 9; full = sid + " insert"; return sid;
+            rank = 20; full = sid + " insert"; return sid;
         }
 
         Row HeaderRow(Item it, int kind, float cur, float max)
         {
-            string nm = GearName(it, kind == 3 ? "Vest" : "Helmet");
+            string nm = GearName(it, kind == 3 ? "Vest" : kind == 6 ? "Mask" : kind == 8 ? "Leg Armor" : "Helmet");
             return new Row { Id = it.Id, Label = nm, Full = nm, Kind = kind, Zone = 5, Cur = cur, Max = max, Txt = nm + " - " + Mathf.Floor(cur + 0.0001f).ToString("0") + "/" + Mathf.Floor(max + 0.0001f).ToString("0") };
         }
 
@@ -627,24 +737,29 @@ namespace ShowMeThePlates
             if (cDebug.Value && GetPlayer() != null) { style.fontSize = 12; style.normal.textColor = new Color(1f,1f,1f,0.6f); GUI.Label(new Rect(10f, 10f, 500f, 20f), "ShowMeThePlates active - rows: " + rows.Count, style); }
             if (fade <= 0.01f || rows.Count == 0) return;
 
-            float s = cScale.Value;
-            float iconH = 22f * s * cIconPct.Value / 100f;
-            float gearH = 22f * s * cGearPct.Value / 100f;
-            float gap = 8f * s, indent = 18f * s, lw = Mathf.Max(1f, 1.5f * s);
-            style.fontSize = Mathf.RoundToInt(cTextPxI.Value * s);
-            bool mir = cMirror.Value;   // modo espejo: X se mide desde el borde derecho y todo se refleja respecto a esa X (borde derecho del panel)
-            float xP = Screen.width * (mir ? 100f - cPosX.Value : cPosX.Value) / 100f, yP = Screen.height * cPosY.Value / 100f;
-            float xH = Screen.width * (mir ? 100f - cHX.Value : cHX.Value) / 100f, yH = Screen.height * cHY.Value / 100f;
             float master = cAlpha.Value * Mathf.SmoothStep(0f, 1f, fade);
             bool pulse = Time.unscaledTime < warnUntil && ((int)(Time.unscaledTime * 3f) % 2 == 0);
-            float minRow = cTextPxI.Value * s * 1.4f;
-            float cyP = -1f, cyH = -1f;
+            // cada panel tiene su posicion, tamano y modo espejo (en espejo X se mide desde el borde derecho y todo se refleja respecto a esa X)
+            var gx = new float[NG]; var gy = new float[NG]; var gcy = new float[NG];
+            for (int g = 0; g < NG; g++)
+            {
+                gx[g] = Screen.width * (cMr[g].Value ? 100f - cX[g].Value : cX[g].Value) / 100f;
+                gy[g] = Screen.height * cY[g].Value / 100f;
+                gcy[g] = -1f;
+            }
 
             var old = GUI.color;
             foreach (var r in rows)
             {
-                bool grpP = r.Kind == 0 || r.Kind == 3 || r.Kind == 4;
-                bool header = r.Kind == 3 || r.Kind == 1;
+                int g = Grp(r.Kind);
+                float s = cSz[g].Value;
+                bool mir = cMr[g].Value;
+                float iconH = 22f * s * cIconPct.Value / 100f;
+                float gearH = 22f * s * cGearPct.Value / 100f;
+                float gap = 8f * s, indent = 18f * s, lw = Mathf.Max(1f, 1.5f * s);
+                float minRow = cTextPxI.Value * s * 1.4f;
+                style.fontSize = Mathf.RoundToInt(cTextPxI.Value * s);
+                bool header = IsHeader(r.Kind);
                 float frac = r.Max > 0f ? Mathf.Clamp01(r.Cur / r.Max) : 0f;
                 Color c = Color.white;
                 if (cColor.Value)
@@ -653,11 +768,11 @@ namespace ShowMeThePlates
                 float glow = cGlow.Value;
                 float fl = 0f, until;
                 if (cFlash.Value && flashUntil.TryGetValue(r.Id, out until)) { float rem = until - Time.unscaledTime; if (rem > 0f) fl = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(rem / Mathf.Max(0.2f, cFlashSecs.Value))); }
-                float x = grpP ? xP : xH, y = grpP ? yP : yH;
+                float x = gx[g], y = gy[g];
 
                 if (header)
                 {
-                    IconData d = r.Kind == 3 ? vestIcon : helmIcon;
+                    IconData d = g == GV ? vestIcon : g == GH ? helmIcon : g == GF ? faceIcon : legIcon;
                     bool useIcon = cGearIcon.Value && (d != null || r.Kind == 1);
                     float vh = useIcon ? gearH : 0f, vw = 0f;
                     if (useIcon) vw = d != null ? Mathf.Min(vh * d.W / d.H, vh * 1.8f) : vh;
@@ -669,38 +784,40 @@ namespace ShowMeThePlates
                         else DrawAltyn(ir, 1, 0, frac, c, a, glow, fl);
                     }
                     DrawText(Mir(new Rect(x + (useIcon ? vw + gap : 0f), y, 500f * s, rowH), x, mir), r.Txt, a, s, mir);
-                    float cy = y + (useIcon ? (rowH + vh) / 2f : rowH * 0.85f);
-                    if (grpP) { yP += rowH; cyP = cy; } else { yH += rowH; cyH = cy; }
+                    gcy[g] = y + (useIcon ? (rowH + vh) / 2f : rowH * 0.85f);
+                    gy[g] += rowH;
                     continue;
                 }
 
                 bool pIcon = cPlateIcons.Value;
                 float rowC = Mathf.Max(pIcon ? iconH : 0f, minRow) + 4f * s;
                 float cx = x + indent, mid = y + rowC / 2f;
-                float cy0 = grpP ? cyP : cyH;
+                float cy0 = gcy[g];
                 if (cy0 >= 0f)
                 {
                     float lx = x + indent * 0.3f;
                     GUI.color = new Color(1f, 1f, 1f, 0.3f * a);
                     GUI.DrawTexture(Mir(new Rect(lx, cy0, lw, mid - cy0 + lw), x, mir), Texture2D.whiteTexture);
                     GUI.DrawTexture(Mir(new Rect(lx, mid, indent * 0.6f, lw), x, mir), Texture2D.whiteTexture);
-                    if (grpP) cyP = mid; else cyH = mid;
+                    gcy[g] = mid;
                 }
                 float iw = 0f;
                 if (pIcon)
                 {
                     IconData pd = cRealIcons.Value ? r.Icon : null;
                     if (pd != null) { iw = Mathf.Min(iconH * pd.W / pd.H, iconH * 1.8f); DrawGearIcon(Mir(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), x, mir), pd, frac, c, a, glow, fl); }
-                    else if (r.Kind == 0 || r.Kind == 4) { iw = iconH * 0.75f; DrawPlateIcon(Mir(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), x, mir), frac, c, a, glow, fl); }
+                    else if (r.Kind != 2) { iw = iconH * 0.75f; DrawPlateIcon(Mir(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), x, mir), frac, c, a, glow, fl); }
                     else { iw = iconH; DrawAltyn(Mir(new Rect(cx, y + (rowC - iconH) / 2f, iw, iconH), x, mir), 2, Mathf.Clamp(r.Zone, 0, 4), frac, c, a, glow, fl); }
                 }
                 DrawText(Mir(new Rect(cx + iw + (pIcon ? gap : 0f), y, 400f * s, rowC), x, mir), mir ? (r.TxtM ?? r.Txt) : r.Txt, a, s, mir);
-                if (grpP) yP += rowC; else yH += rowC;
+                gy[g] += rowC;
             }
             if (Time.unscaledTime < warnUntil)
             {
                 float a = master * (pulse ? 0.4f : 1f);
-                var wr = Mir(new Rect(xP, yP + 4f, 500f * s, minRow + 4f * s), xP, mir);
+                float s = cSz[GV].Value; bool mir = cMr[GV].Value;
+                style.fontSize = Mathf.RoundToInt(cTextPxI.Value * s);
+                var wr = Mir(new Rect(gx[GV], gy[GV] + 4f, 500f * s, cTextPxI.Value * s * 1.4f + 4f * s), gx[GV], mir);
                 DrawText(wr, mir ? warnText + " !" : "! " + warnText, a, s, mir);
             }
             GUI.color = old;
@@ -770,16 +887,18 @@ namespace ShowMeThePlates
         readonly Dictionary<string, float> iconNext = new Dictionary<string, float>();
         readonly Dictionary<string, int> iconTries = new Dictionary<string, int>();
         readonly Dictionary<string, Task> iconPending = new Dictionary<string, Task>();
-        UnityEngine.Object scanned; Item vestItem, helmItem; IconData vestIcon, helmIcon;
+        UnityEngine.Object scanned; Item vestItem, helmItem, faceItem, legItem; IconData vestIcon, helmIcon, faceIcon, legIcon;
         List<MethodInfo> iconCands; MethodInfo iconWorking;
 
         void UpdateIcons()
         {
             if (cPlateIcons.Value && cRealIcons.Value)
-                for (int i = 0; i < rows.Count; i++) { var r = rows[i]; if (r.Icon == null && r.It != null && (r.Kind == 0 || r.Kind == 2 || r.Kind == 4)) r.Icon = GetIcon(r.It, PlateKey(r.It)); }
+                for (int i = 0; i < rows.Count; i++) { var r = rows[i]; if (r.Icon == null && r.It != null && !IsHeader(r.Kind)) r.Icon = GetIcon(r.It, PlateKey(r.It)); }
             if (!cGearIcon.Value) return;
             vestIcon = GetIcon(vestItem);
             helmIcon = GetIcon(helmItem);
+            faceIcon = GetIcon(faceItem);
+            legIcon = GetIcon(legItem);
         }
 
         static object ResultOf(Task t)
@@ -940,7 +1059,7 @@ namespace ShowMeThePlates
             var gp = new Color32[GW * GH];
             for (int k = 0; k < GW * GH; k++) gp[k] = new Color32(255, 255, 255, (byte)Mathf.RoundToInt(Mathf.Clamp01(m1[k] * 1.6f) * 255f));
             gt.SetPixels32(gp); gt.Apply(); gt.filterMode = FilterMode.Bilinear; gt.wrapMode = TextureWrapMode.Clamp;
-            if (cDebug.Value)
+            if (cDumpIcons.Value)   // solo para depurar iconos: guarda los PNG junto a la DLL
             {
                 try
                 {

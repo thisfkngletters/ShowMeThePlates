@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace ShowMeThePlates
 {
-    // Texto de durabilidad de placas / insertos sobre el icono del objeto en el inventario + tooltip
+    // Texto de durabilidad de placas / insertos (chalecos, cascos, mascaras con insertos, pierneras) sobre el icono del objeto en el inventario + tooltip
     public partial class Plugin
     {
         public static Plugin Inst;
@@ -20,15 +20,15 @@ namespace ShowMeThePlates
         const string InvName = "SMTP_InvText";
         static Item hovered;
 
-        class Part { public string Short, Long; public float Cur, Max; public int Cls, Rank; public bool Empty; }
+        class Part { public string Short, Long; public float Cur, Max; public int Cls, Rank; public bool Empty, ClassOnly; }
 
         void InvInit()
         {
-            const string I = "6. Inventory";
+            const string I = "8. Inventory";
             cInvText = Config.Bind(I, "Show durability on item icon", true, new ConfigDescription("Shows each plate / helmet insert durability over the vest or helmet icon in the inventory, stash and loot.", null, new ConfigurationManagerAttributes { Order = 50 }));
             cInvTip = Config.Bind(I, "Show durability in tooltip", true, new ConfigDescription("Adds the plate / insert list to the item tooltip when hovering.", null, new ConfigurationManagerAttributes { Order = 49 }));
             cInvFull = Config.Bind(I, "Show max durability", false, new ConfigDescription("On the icon: 'F 56/60' instead of 'F 56'.", null, new ConfigurationManagerAttributes { Order = 48 }));
-            cInvClass = Config.Bind(I, "Show armor class", true, new ConfigDescription("Shows the armor class (I-VI) of each plate / insert, e.g. [VI] F. Plate, in the tooltip.", null, new ConfigurationManagerAttributes { Order = 46 }));
+            cInvClass = Config.Bind(I, "Show armor class", true, new ConfigDescription("Shows the armor class (I-VI) of each plate / insert, e.g. [VI] F. Plate, in the tooltip, and the class badge on ballistic mask icons.", null, new ConfigurationManagerAttributes { Order = 46 }));
             cInvClassIcon = Config.Bind(I, "Armor class on icon", true, new ConfigDescription("Also shows the armor class badge (the game's own icon) before each line on the item icon.", null, new ConfigurationManagerAttributes { Order = 45 }));
             cInvBg = Config.Bind(I, "Dark background", true, new ConfigDescription("Semi-transparent black box behind the text on the item icon.", null, new ConfigurationManagerAttributes { Order = 44 }));
             cInvBgAlpha = Config.Bind(I, "Background opacity", 0.4f, new ConfigDescription("Opacity of the dark box.", new AcceptableValueRange<float>(0f, 1f), new ConfigurationManagerAttributes { Order = 43 }));
@@ -65,9 +65,15 @@ namespace ShowMeThePlates
         // Placas / insertos de un objeto (vacio si no es blindaje con piezas).
         // soft = true: si NO tiene ranuras de placa (ni piezas de casco), lista sus insertos blandos (chalecos solo con insertos; icono y tooltip).
         // Chalecos con ranuras de placa: solo placas (si estan vacias, nada), para no saturar el icono (flea market).
-        static List<Part> PartsOf(Item item, bool soft = false, bool noPlates = false)
+        static List<Part> PartsOf(Item item, bool soft = false, bool noPlates = false, bool faceClass = false)
         {
             var list = new List<Part>(); List<Part> ins = null; bool plateSlot = false;
+            // faceClass = true (solo el icono): mascaras blindadas (FaceCover) -> solo la insignia de clase, sin durabilidad (el juego ya la muestra)
+            if (faceClass && IsFaceCover(item))
+            {
+                int fc = item.GetItemComponent<RepairableComponent>() != null ? ClassOf(item) : 0;
+                if (fc > 0) list.Add(new Part { Short = "", Long = "Armor class", Cls = fc, ClassOnly = true });
+            }
             var ci = item as CompoundItem;
             if (ci == null) return list;
             foreach (var sl in ci.Slots)
@@ -96,9 +102,23 @@ namespace ShowMeThePlates
             }
             // noPlates = true (solo el icono): ranuras de placa todas vacias -> una linea "No Plates"
             if (noPlates && list.Count == 0 && plateSlot) { list.Add(new Part { Short = "No Plates", Long = "No Plates", Empty = true }); return list; }
-            if (list.Count == 0 && !plateSlot && ins != null) { ins.Sort((a, b) => a.Rank.CompareTo(b.Rank)); return ins; }
+            if (!plateSlot && ins != null && (list.Count == 0 || list[0].ClassOnly)) { ins.Sort((a, b) => a.Rank.CompareTo(b.Rank)); list.AddRange(ins); return list; }
             return list;
         }
+        // Mascara (slot FaceCover): plantilla hija de "FaceCover" (5a341c4686f77469e155819e)
+        const string FaceCoverParent = "5a341c4686f77469e155819e";
+        static readonly Dictionary<string, bool> faceCache = new Dictionary<string, bool>();
+        static bool IsFaceCover(Item item)
+        {
+            string tid = item.TemplateId.ToString(); bool r;
+            if (faceCache.TryGetValue(tid, out r)) return r;
+            r = false;
+            try { for (var t = item.Template; t != null; t = t.Parent) if (t.ParentId.HasValue && t.ParentId.Value.ToString() == FaceCoverParent) { r = true; break; } }
+            catch { r = false; }
+            faceCache[tid] = r;
+            return r;
+        }
+
         // Insignia grafica de clase (sprite TMP del juego "armor_classes_N"); si no existe, numero romano en gris
         static string ClassTag(TextMeshProUGUI t, int c)
         {
@@ -121,7 +141,7 @@ namespace ShowMeThePlates
         static readonly string[] Roman = { "", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X" };
         static string Rom(int c) { return c > 0 && c < Roman.Length ? Roman[c] : ""; }
         static readonly string[] ZoneShort = { "T", "N", "E", "J", "Ea" };
-        static readonly string[] SoftShort = { "Cs", "Bs", "LS", "RS", "Ns", "Gs", "GRs", "LSh", "RSh" };   // por rango de InsertLabel
+        static readonly string[] SoftShort = { "Cs", "Bs", "LS", "RS", "Ns", "Gs", "GRs", "LSh", "RSh", "LT", "RT", "LC", "RC", "LF", "RF" };   // por rango de InsertLabel
 
         static string Hex(float frac)
         {
@@ -136,7 +156,7 @@ namespace ShowMeThePlates
                 var iv = __instance as ItemView;
                 if (iv == null) return;
                 var tr = iv.transform.Find(InvName);
-                var parts = inst.cInvText.Value ? PartsOf(iv.Item, true, true) : null;
+                var parts = inst.cInvText.Value ? PartsOf(iv.Item, true, true, inst.cInvClass.Value) : null;
                 if (parts == null || parts.Count == 0) { if (tr != null) tr.gameObject.SetActive(false); return; }
                 TextMeshProUGUI t;
                 if (tr == null)
@@ -211,10 +231,16 @@ namespace ShowMeThePlates
                     float f = q.Max > 0f ? q.Cur / q.Max : 0f;
                     if (i > 0) sb.Append('\n');
                     if (q.Empty) { sb.Append("<color=#9A9A9A>").Append(q.Short).Append("</color>"); continue; }
+                    if (q.ClassOnly) { sb.Append(inst.cInvClassIcon.Value ? ClassTag(t, q.Cls).TrimEnd() + "\u00A0" : "<color=#9A9A9A>Class " + Rom(q.Cls) + "</color>"); continue; }
                     sb.Append(inst.cInvClass.Value && inst.cInvClassIcon.Value && q.Cls > 0 ? ClassTag(t, q.Cls) : "").Append(q.Short).Append(' ').Append("<color=#").Append(Hex(f)).Append('>').Append(Mathf.Floor(q.Cur + 0.0001f).ToString("0")).Append("</color>");
                     if (full) sb.Append('/').Append(Mathf.Floor(q.Max + 0.0001f).ToString("0"));
                 }
                 t.text = sb.ToString();
+                // mascaras (solo insignia): sin texto la caja oscura sale mas pequena que la insignia; se le da el alto de una linea normal
+                var le = t.GetComponent<UnityEngine.UI.LayoutElement>();
+                bool onlyBadge = parts.Count == 1 && parts[0].ClassOnly;
+                if (onlyBadge && le == null) le = t.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
+                if (le != null) { le.minHeight = onlyBadge ? t.fontSize * 1.25f : -1f; le.minWidth = onlyBadge ? t.fontSize * 1.6f : -1f; }
                 var bimg = tr.GetComponent<UnityEngine.UI.Image>();
                 if (bimg != null)
                 {
